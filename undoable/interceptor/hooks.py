@@ -6,6 +6,8 @@ from undoable.firewall.rules import ALLOW, ASK, DENY, Decision, evaluate_tool_us
 from undoable.killswitch import check as killswitch_check
 from undoable.packages import check as packages_check
 from undoable.packages import registry as packages_registry
+from undoable.snapshot.lockfiles import backup_lockfiles
+from undoable.snapshot.sqlite_backup import backup_sqlite_databases_for_command
 from undoable.store.db import connect, default_db_path
 from undoable.store.events import insert_event
 
@@ -52,11 +54,19 @@ def evaluate(payload: dict[str, Any], project_dir: str | None = None) -> Decisio
 
     if tool_name == "Bash":
         command = (tool_input or {}).get("command") or ""
+
         package_result = packages_check.evaluate_command(
             command,
             pypi_fetch=packages_registry.default_fetch,
             npm_fetch=packages_registry.default_fetch,
         )
+        if package_result is not None:
+            _try(lambda: backup_lockfiles(resolved_dir), "back up lockfiles")
+        _try(
+            lambda: backup_sqlite_databases_for_command(resolved_dir, command),
+            "back up sqlite database",
+        )
+
         if package_result is not None and package_result.decision == packages_check.ASK:
             reason = package_result.reason
             if firewall_decision.decision == ASK:
@@ -64,6 +74,16 @@ def evaluate(payload: dict[str, Any], project_dir: str | None = None) -> Decisio
             return Decision(tier=_PACKAGE_TIER, decision=ASK, reason=reason, rule="package-check")
 
     return firewall_decision
+
+
+def _try(action, description: str) -> None:
+    """Best-effort side effect (a file backup): report failure, never raise
+    it -- a backup that couldn't be taken is a reason to log, not a reason
+    to turn a normal tool call into an internal-error "ask"."""
+    try:
+        action()
+    except Exception as exc:
+        print(f"undoable: failed to {description}: {exc}", file=sys.stderr)
 
 
 def log_event(

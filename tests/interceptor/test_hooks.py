@@ -221,6 +221,60 @@ def test_run_asks_when_a_file_tool_targets_outside_the_project(tmp_path: Path, c
     assert outside in output["permissionDecisionReason"]
 
 
+def test_run_backs_up_lockfile_before_a_pip_install(tmp_path: Path, monkeypatch) -> None:
+    import undoable.packages.registry as packages_registry
+    from undoable.snapshot.file_backup import list_backups
+
+    monkeypatch.setattr(packages_registry, "default_fetch", lambda url, timeout: 200)
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+
+    payload = {**PRE_TOOL_USE, "tool_input": {"command": "pip install requests"}}
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    backups = list_backups(tmp_path, kind="lockfile")
+    assert len(backups) == 1
+    assert backups[0].original_path == str(tmp_path / "requirements.txt")
+
+
+def test_run_does_not_back_up_lockfile_for_non_install_commands(tmp_path: Path) -> None:
+    from undoable.snapshot.file_backup import list_backups
+
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+    run(io.StringIO(json.dumps(PRE_TOOL_USE)), project_dir=str(tmp_path))
+
+    assert list_backups(tmp_path, kind="lockfile") == []
+
+
+def test_run_backs_up_sqlite_database_before_a_sqlite3_command(tmp_path: Path) -> None:
+    from undoable.snapshot.file_backup import list_backups
+
+    db = tmp_path / "app.db"
+    db.write_bytes(b"original-bytes")
+
+    # A safe SELECT, not a firewall-denied DROP: this test is specifically
+    # about the backup trigger, not about firewall/backup interaction.
+    payload = {**PRE_TOOL_USE, "tool_input": {"command": 'sqlite3 app.db "SELECT * FROM users;"'}}
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    backups = list_backups(tmp_path, kind="database")
+    assert len(backups) == 1
+    assert backups[0].original_path == str(db)
+
+
+def test_run_skips_backup_when_firewall_denies_outright(tmp_path: Path) -> None:
+    from undoable.snapshot.file_backup import list_backups
+
+    db = tmp_path / "app.db"
+    db.write_bytes(b"original-bytes")
+
+    # DROP TABLE is firewall-dangerous -> denied, so the command never
+    # executes -- nothing to protect against, so no backup is taken either.
+    payload = {**DANGEROUS_BASH, "tool_input": {"command": 'sqlite3 app.db "DROP TABLE users;"'}}
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert list_backups(tmp_path, kind="database") == []
+
+
 def test_run_combines_firewall_and_package_reasons_in_one_chained_command(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

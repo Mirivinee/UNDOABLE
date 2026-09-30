@@ -40,6 +40,13 @@ def test_connect_creates_snapshots_table_with_expected_columns(conn: sqlite3.Con
     assert columns == {"id", "label", "commit_sha", "tree_sha", "parent_sha", "created_at"}
 
 
+def test_connect_creates_file_backups_table_with_expected_columns(
+    conn: sqlite3.Connection,
+) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(file_backups)")}
+    assert columns == {"id", "kind", "original_path", "backup_path", "label", "created_at"}
+
+
 def test_connect_enables_wal_mode(conn: sqlite3.Connection) -> None:
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode.lower() == "wal"

@@ -33,6 +33,17 @@ CREATE TABLE IF NOT EXISTS snapshots (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at);
+
+CREATE TABLE IF NOT EXISTS file_backups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    backup_path TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_file_backups_kind ON file_backups (kind);
+CREATE INDEX IF NOT EXISTS idx_file_backups_created_at ON file_backups (created_at);
 """
 
 
