@@ -3,7 +3,7 @@
 ## Current phase: 1 — Interceptor + event log
 
 - [x] Project skeleton (pyproject, package folders, ruff, pytest)
-- [ ] SQLite event log (`store/`)
+- [x] SQLite event log (`store/`)
 - [ ] Interceptor reads hook JSON from stdin, logs every action
 - [ ] Firewall: rule-based blocking of dangerous commands
 - [ ] Snapshot engine: git-based snapshot + rollback
@@ -17,7 +17,7 @@
 ## Decisions
 - Flat layout: package `undoable/` lives at repo root beside `tests/`; hatchling build backend, console script `undoable = undoable.cli:app`.
 - CLI: single Typer app in `undoable/cli.py`; future hook entry point will be one dispatching command (e.g. `undoable hook`) used for all PreToolUse/PostToolUse/SessionStart/Stop/SessionEnd wiring, not one subcommand per hook event.
-- Event log DB will live per-project at `.undoable/undoable.db` (decided ahead of the next task, "SQLite event log").
+- Event log DB lives per-project at `.undoable/undoable.db`, WAL mode, single `events` table generic enough for all five hook types (nullable tool_* columns) plus a verbatim `raw_payload` column so nothing is lost if Claude Code's hook JSON grows new fields.
 
 ## Blocked
 - (none)
