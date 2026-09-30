@@ -23,6 +23,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events (session_id);
 CREATE INDEX IF NOT EXISTS idx_events_hook_event ON events (hook_event);
 CREATE INDEX IF NOT EXISTS idx_events_logged_at ON events (logged_at);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT,
+    commit_sha TEXT NOT NULL,
+    tree_sha TEXT NOT NULL,
+    parent_sha TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at);
 """
 
 
