@@ -22,7 +22,8 @@ def hook() -> None:
     SessionEnd) -- it dispatches on the payload's hook_event_name, so one
     settings.json command covers all of them.
     """
-    run_hook(sys.stdin)
+    exit_code = run_hook(sys.stdin)
+    raise typer.Exit(code=exit_code)
 
 
 if __name__ == "__main__":

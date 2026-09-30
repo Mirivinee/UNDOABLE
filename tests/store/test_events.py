@@ -69,6 +69,23 @@ def test_get_events_filters_by_hook_event(conn: sqlite3.Connection) -> None:
     assert [e.hook_event for e in get_events(conn, hook_event="PostToolUse")] == ["PostToolUse"]
 
 
+def test_decision_risk_tier_and_reason_round_trip(conn: sqlite3.Connection) -> None:
+    insert_event(
+        conn,
+        session_id="a",
+        hook_event="PreToolUse",
+        raw_payload={},
+        decision="block",
+        risk_tier="dangerous",
+        reason="rm -rf is dangerous",
+    )
+
+    [event] = get_events(conn, session_id="a")
+    assert event.decision == "block"
+    assert event.risk_tier == "dangerous"
+    assert event.reason == "rm -rf is dangerous"
+
+
 def test_get_events_orders_oldest_first(conn: sqlite3.Connection) -> None:
     first = insert_event(conn, session_id="a", hook_event="SessionStart", raw_payload={})
     second = insert_event(conn, session_id="a", hook_event="Stop", raw_payload={})

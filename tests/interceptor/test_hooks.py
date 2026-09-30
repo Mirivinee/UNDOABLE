@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import time
 from pathlib import Path
@@ -30,6 +31,22 @@ SESSION_START = {
     "hook_event_name": "SessionStart",
     "cwd": "/work/project",
     "source": "startup",
+}
+
+DANGEROUS_BASH = {
+    "session_id": "sess-1",
+    "hook_event_name": "PreToolUse",
+    "cwd": "/work/project",
+    "tool_name": "Bash",
+    "tool_input": {"command": "rm -rf /tmp/data"},
+}
+
+RISKY_BASH = {
+    "session_id": "sess-1",
+    "hook_event_name": "PreToolUse",
+    "cwd": "/work/project",
+    "tool_name": "Bash",
+    "tool_input": {"command": "git push origin main"},
 }
 
 
@@ -78,20 +95,89 @@ def test_log_event_falls_back_to_payload_cwd_when_no_project_dir(tmp_path: Path)
 
 def test_run_reads_stdin_and_logs(tmp_path: Path) -> None:
     stdin = io.StringIO('{"session_id": "sess-2", "hook_event_name": "Stop", "cwd": "x"}')
-    run(stdin, project_dir=str(tmp_path))
+    exit_code = run(stdin, project_dir=str(tmp_path))
 
+    assert exit_code == 0
     [event] = _events(tmp_path)
     assert event.session_id == "sess-2"
     assert event.hook_event == "Stop"
 
 
+def test_run_blocks_dangerous_command_and_logs_the_block(tmp_path: Path, capsys) -> None:
+    stdin = io.StringIO(json.dumps(DANGEROUS_BASH))
+    exit_code = run(stdin, project_dir=str(tmp_path))
+
+    assert exit_code == 2
+    assert capsys.readouterr().err.strip()
+    [event] = _events(tmp_path)
+    assert event.decision == "block"
+    assert event.risk_tier == "dangerous"
+    assert event.reason
+
+
+def test_run_allows_risky_command_but_flags_it(tmp_path: Path) -> None:
+    stdin = io.StringIO(json.dumps(RISKY_BASH))
+    exit_code = run(stdin, project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    [event] = _events(tmp_path)
+    assert event.decision == "allow"
+    assert event.risk_tier == "risky"
+    assert event.reason
+
+
+def test_run_allows_safe_command(tmp_path: Path) -> None:
+    stdin = io.StringIO(json.dumps(PRE_TOOL_USE))
+    exit_code = run(stdin, project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    [event] = _events(tmp_path)
+    assert event.decision == "allow"
+    assert event.risk_tier == "safe"
+
+
+def test_run_does_not_evaluate_firewall_for_posttooluse(tmp_path: Path) -> None:
+    stdin = io.StringIO(json.dumps(POST_TOOL_USE))
+    exit_code = run(stdin, project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    [event] = _events(tmp_path)
+    assert event.decision is None
+    assert event.risk_tier is None
+
+
 def test_run_never_raises_on_malformed_json(tmp_path: Path, capsys) -> None:
     stdin = io.StringIO("{not valid json")
-    run(stdin, project_dir=str(tmp_path))  # must not raise
+    exit_code = run(stdin, project_dir=str(tmp_path))  # must not raise
 
+    assert exit_code == 0
     captured = capsys.readouterr()
     assert "undoable" in captured.err
     assert not (tmp_path / ".undoable" / "undoable.db").exists()
+
+
+def test_run_blocks_pretooluse_on_internal_error(monkeypatch, tmp_path: Path) -> None:
+    import undoable.interceptor.hooks as hooks_module
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(hooks_module, "log_event", boom)
+    exit_code = hooks_module.run(io.StringIO(json.dumps(PRE_TOOL_USE)), project_dir=str(tmp_path))
+
+    assert exit_code == 2
+
+
+def test_run_allows_non_pretooluse_hook_on_internal_error(monkeypatch, tmp_path: Path) -> None:
+    import undoable.interceptor.hooks as hooks_module
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(hooks_module, "log_event", boom)
+    exit_code = hooks_module.run(io.StringIO(json.dumps(SESSION_START)), project_dir=str(tmp_path))
+
+    assert exit_code == 0
 
 
 def test_run_never_raises_on_empty_stdin(tmp_path: Path) -> None:
@@ -125,3 +211,19 @@ def test_hook_command_via_subprocess_always_exits_zero(tmp_path: Path) -> None:
     assert result.returncode == 0
     [event] = _events(tmp_path)
     assert event.session_id == "sess-3"
+
+
+def test_hook_command_via_subprocess_blocks_dangerous_command(tmp_path: Path) -> None:
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "undoable.cli", "hook"],
+        input=json.dumps(DANGEROUS_BASH),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stderr.strip()

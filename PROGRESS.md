@@ -5,7 +5,7 @@
 - [x] Project skeleton (pyproject, package folders, ruff, pytest)
 - [x] SQLite event log (`store/`)
 - [x] Interceptor reads hook JSON from stdin, logs every action
-- [ ] Firewall: rule-based blocking of dangerous commands
+- [x] Firewall: rule-based blocking of dangerous commands
 - [ ] Snapshot engine: git-based snapshot + rollback
 - [ ] Package check: npm/PyPI existence + typo detection
 - [ ] Kill switch: loop detection + budget + folder boundary
@@ -70,6 +70,9 @@
 - CLI: single Typer app in `undoable/cli.py`; future hook entry point will be one dispatching command (e.g. `undoable hook`) used for all PreToolUse/PostToolUse/SessionStart/Stop/SessionEnd wiring, not one subcommand per hook event.
 - Event log DB lives per-project at `.undoable/undoable.db`, WAL mode, single `events` table generic enough for all five hook types (nullable tool_* columns) plus a verbatim `raw_payload` column so nothing is lost if Claude Code's hook JSON grows new fields.
 - Interceptor is one dispatching command, `undoable hook`, used for every hook event; it reads stdin, dispatches on `hook_event_name`, and always exits 0. Phase 1 has no firewall, so there's no decision to enforce -- on malformed input it logs the error to stderr and does nothing else, rather than inventing a fail-safe "ask" that has no decision engine behind it yet.
+- Firewall (`firewall/rules.py`) scores Bash commands as safe/risky/dangerous by regex over shell-separator-delimited segments (so chained commands like `a && rm -rf /` are still caught); dangerous is blocked, risky is allowed but logged with a reason. Rule set matches the spec's named examples (rm -rf, git push --force, git reset --hard, curl|bash, DROP TABLE/DATABASE) plus a few directly analogous risky ones (plain git push, DELETE/UPDATE without WHERE, chmod -R, partial rm flags). It does not catch aliases, command substitution, or destructive logic written in another language -- documented as a known limit, not silently assumed away.
+- Added an `events.risk_tier` column alongside `decision`/`reason` so safe/risky/dangerous is recorded even when the decision itself is "allow".
+- Fixed a fail-safe gap while wiring this in: `undoable hook`'s exit-code protocol has no real "ask", so on an internal error during a PreToolUse decision we now block (exit 2) instead of allowing, per CLAUDE.md's "never silent allow" rule -- but only for PreToolUse; blocking a non-tool hook like Stop on a parsing bug could hang the session for no safety benefit, so those still fail open.
 
 ## Blocked
 - (none)

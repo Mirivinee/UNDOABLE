@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS events (
     tool_input TEXT,
     tool_response TEXT,
     decision TEXT,
+    risk_tier TEXT,
     reason TEXT,
     cwd TEXT,
     transcript_path TEXT,

@@ -14,6 +14,7 @@ class Event:
     tool_input: dict[str, Any] | None
     tool_response: dict[str, Any] | None
     decision: str | None
+    risk_tier: str | None
     reason: str | None
     cwd: str | None
     transcript_path: str | None
@@ -31,6 +32,7 @@ def insert_event(
     tool_input: dict[str, Any] | None = None,
     tool_response: dict[str, Any] | None = None,
     decision: str | None = None,
+    risk_tier: str | None = None,
     reason: str | None = None,
     cwd: str | None = None,
     transcript_path: str | None = None,
@@ -41,8 +43,8 @@ def insert_event(
         """
         INSERT INTO events (
             session_id, hook_event, tool_name, tool_input, tool_response,
-            decision, reason, cwd, transcript_path, raw_payload, logged_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            decision, risk_tier, reason, cwd, transcript_path, raw_payload, logged_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -51,6 +53,7 @@ def insert_event(
             json.dumps(tool_input) if tool_input is not None else None,
             json.dumps(tool_response) if tool_response is not None else None,
             decision,
+            risk_tier,
             reason,
             cwd,
             transcript_path,
@@ -73,6 +76,7 @@ def _row_to_event(row: sqlite3.Row) -> Event:
             json.loads(row["tool_response"]) if row["tool_response"] is not None else None
         ),
         decision=row["decision"],
+        risk_tier=row["risk_tier"],
         reason=row["reason"],
         cwd=row["cwd"],
         transcript_path=row["transcript_path"],

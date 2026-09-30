@@ -26,6 +26,7 @@ def test_connect_creates_events_table_with_expected_columns(conn: sqlite3.Connec
         "tool_input",
         "tool_response",
         "decision",
+        "risk_tier",
         "reason",
         "cwd",
         "transcript_path",
