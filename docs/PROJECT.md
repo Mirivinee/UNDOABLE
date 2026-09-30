@@ -177,3 +177,35 @@ Build an attack and mistake test suite and run the agent with and without the sa
 - **Team policies:** shared safety rules across a team's agents.
 - **Multi-agent support:** Cursor, Codex, and other agents beyond Claude Code.
 - **MCP server scanner:** check MCP servers for risky tools before installation.
+
+## 12. Vision: the trust infrastructure for AI agents
+
+**Record everything. Block the dangerous. Undo the mistakes.**
+
+UNDOABLE starts as a safety net for coding agents and grows into the layer that makes it safe to give AI agents real power.
+
+### The big problems
+
+| Problem | Why it matters | UNDOABLE's answer |
+|--------|----------------|-------------------|
+| **No undo in the real world** | Agents now act on email, Slack, GitHub, cloud, and databases through MCP; mistakes there are permanent | Reversible / compensatable / irreversible model with one unified undo timeline |
+| **No accountability** | After an incident, nobody can prove what the agent did or who approved it; regulation is starting to require traceability and robustness testing | Tamper-proof, hash-chained audit log with verification and exportable reports |
+| **Fear blocks adoption** | Companies refuse to give agents real access because one mistake could be catastrophic | Turning irreversible actions into undoable or delayed ones lowers the risk enough to say yes |
+| **Attacks scale, defense doesn't** | A poisoned package or injected webpage hits every agent that reads it; each developer defends alone | Opt-in shared attack fingerprints: one user's block protects everyone |
+| **Unmeasurable risk** | Insurers and managers can't price or manage risk they can't measure | Safety score and trend reports from real agent behavior |
+| **Untrusted extensions** | People install MCP servers and plugins without knowing what they can do | Pre-install scanners with risk ratings and source trust info |
+
+### Versions
+
+| Version | Scope |
+|---------|-------|
+| **v1** | Coding-agent safety net: firewall, beyond-/rewind undo (bash, DB, packages, git), package check, kill switch, morning report |
+| **v1.5** | Smarter approvals: impact preview, phone approvals, learning approvals, local dashboard |
+| **v2** | Undo for external services via MCP proxy; tamper-proof audit log |
+| **v3** | Trust infrastructure: shared threat intel, safety scores, compliance reports, scanners, team policies, multi-agent support |
+
+### Principles
+- Local-first: everything runs on the user's machine by default.
+- Opt-in sharing only; shared data is anonymized fingerprints, never code or personal data.
+- Fail safe: on internal error, ask — never silently allow.
+- Honest limits: truly irreversible actions are delayed or gated, never falsely promised as undoable.
