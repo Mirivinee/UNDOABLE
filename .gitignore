@@ -1,5 +1,6 @@
 .env
 .env.*
+.undoable/
 __pycache__/
 *.pyc
 .venv/
