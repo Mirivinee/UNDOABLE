@@ -3,10 +3,11 @@ import sys
 from typing import Any, TextIO
 
 from undoable.firewall.injection import scan_text
-from undoable.firewall.rules import ALLOW, ASK, DENY, Decision, evaluate_tool_use
+from undoable.firewall.rules import ALLOW, ASK, DENY, SAFE, Decision, evaluate_tool_use
 from undoable.killswitch import check as killswitch_check
 from undoable.packages import check as packages_check
 from undoable.packages import registry as packages_registry
+from undoable.snapshot.git_snapshot import create_snapshot
 from undoable.snapshot.lockfiles import backup_lockfiles
 from undoable.snapshot.sqlite_backup import backup_sqlite_databases_for_command
 from undoable.store.db import connect, default_db_path
@@ -16,6 +17,11 @@ _INTERNAL_ERROR_TIER = "error"
 _PACKAGE_TIER = "package"
 _KILLSWITCH_TIER = "killswitch"
 _INJECTION_TIER = "injection"
+
+# Tools that can rewrite file content outright, independent of whatever the
+# firewall's Bash-only rules say. A risky/dangerous-tier Bash command gets
+# the same treatment -- see the snapshot trigger in evaluate() below.
+_SNAPSHOT_WORTHY_TOOLS = {"Write", "Edit", "NotebookEdit"}
 
 
 def evaluate(payload: dict[str, Any], project_dir: str | None = None) -> Decision | None:
@@ -27,6 +33,13 @@ def evaluate(payload: dict[str, Any], project_dir: str | None = None) -> Decisio
     gets prompt-injection scanning of the tool's own output: content an
     agent just read is exactly where an injection attempt would live, and
     this is the only point it's actually available to scan.
+
+    PreToolUse also takes a pre-action git snapshot (best-effort, silently
+    skipped outside a git repo) before Write/Edit/NotebookEdit, and before
+    any Bash command the firewall didn't score as safe -- the Snapshot
+    Engine existing as a standalone capability isn't the same as it firing
+    automatically, and "restore after a mistake" only works if something
+    was actually captured before the mistake happened.
     """
     hook_event = payload.get("hook_event_name")
     if hook_event == "PostToolUse":
@@ -50,6 +63,14 @@ def evaluate(payload: dict[str, Any], project_dir: str | None = None) -> Decisio
             decision=ASK,
             reason=kill_decision.reason,
             rule=f"killswitch-{kill_decision.check}",
+        )
+
+    if tool_name in _SNAPSHOT_WORTHY_TOOLS or (
+        tool_name == "Bash" and firewall_decision.tier != SAFE
+    ):
+        _try(
+            lambda: create_snapshot(resolved_dir, label=f"before {tool_name}"),
+            "create a pre-action snapshot",
         )
 
     if tool_name == "Bash":

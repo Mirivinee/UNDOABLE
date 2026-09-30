@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from undoable.interceptor.hooks import log_event, run
 from undoable.store.db import connect, default_db_path
 from undoable.store.events import get_events
+from undoable.store.snapshots import list_snapshots
 
 PRE_TOOL_USE = {
     "session_id": "sess-1",
@@ -64,6 +66,23 @@ def _events(tmp_path: Path):
         return get_events(conn)
     finally:
         conn.close()
+
+
+def _snapshots(tmp_path: Path):
+    conn = connect(default_db_path(tmp_path))
+    try:
+        return list_snapshots(conn)
+    finally:
+        conn.close()
+
+
+def _git_init(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("v1")
+    subprocess.run(["git", "add", "a.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
 
 
 def test_log_event_pretooluse_captures_tool_input(tmp_path: Path) -> None:
@@ -273,6 +292,60 @@ def test_run_skips_backup_when_firewall_denies_outright(tmp_path: Path) -> None:
     run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
 
     assert list_backups(tmp_path, kind="database") == []
+
+
+def test_run_takes_a_snapshot_before_a_write_tool_call(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    payload = {
+        "session_id": "sess-1",
+        "hook_event_name": "PreToolUse",
+        "cwd": str(tmp_path),
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(tmp_path / "a.txt"), "content": "v2"},
+    }
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    [snapshot] = _snapshots(tmp_path)
+    assert "Write" in snapshot.label
+
+
+def test_run_takes_a_snapshot_before_a_risky_bash_command(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    payload = {**RISKY_BASH, "cwd": str(tmp_path)}
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert len(_snapshots(tmp_path)) == 1
+
+
+def test_run_does_not_snapshot_for_a_safe_bash_command(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    payload = {**PRE_TOOL_USE, "cwd": str(tmp_path)}
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert _snapshots(tmp_path) == []
+
+
+def test_run_does_not_snapshot_when_firewall_denies_outright(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    payload = {**DANGEROUS_BASH, "cwd": str(tmp_path)}
+    run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert _snapshots(tmp_path) == []
+
+
+def test_run_skips_snapshot_gracefully_outside_a_git_repo(tmp_path: Path) -> None:
+    # tmp_path is deliberately NOT git-initialized here.
+    payload = {
+        "session_id": "sess-1",
+        "hook_event_name": "PreToolUse",
+        "cwd": str(tmp_path),
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(tmp_path / "a.txt"), "content": "v2"},
+    }
+    exit_code = run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert exit_code == 0  # best-effort: failure is logged, not escalated
+    assert _snapshots(tmp_path) == []
 
 
 def test_run_combines_firewall_and_package_reasons_in_one_chained_command(
