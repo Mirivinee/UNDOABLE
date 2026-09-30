@@ -9,7 +9,7 @@
 - [x] Snapshot engine: git-based snapshot + rollback
 - [x] Package check: npm/PyPI existence + typo detection
 - [x] Kill switch: loop detection + budget + folder boundary
-- [ ] Morning report
+- [x] Morning report
 - [ ] Undo for databases and lockfiles
 - [ ] Prompt-injection classifier
 - [ ] Attack suite + metrics + demo
@@ -85,6 +85,7 @@
 - Loop detection (`killswitch/loop.py`) compares the about-to-run call's tool_name/tool_input against the last (threshold-1) already-logged PreToolUse calls for exact equality, rather than trying to interpret tool_response as "was this an error" -- that response schema also isn't part of any confirmed contract, while "the agent keeps issuing the exact same call" is a reliable, schema-independent stuck-loop signal on its own. Default threshold 3.
 - Folder boundary (`killswitch/boundary.py`) only checks structured file-path tool inputs (Read/Write/Edit/Glob/Grep/NotebookEdit's file_path/path/notebook_path) against project_dir, using normcase path comparison for the same Windows-safety reason as the snapshot engine's repo-root check. Bash commands are not scanned for path arguments (cd, relative traversal) -- a documented known limit rather than a fragile regex guess at what looks like a path in free-form text.
 - All three kill-switch checks resolve to "ask", never "deny": a stuck loop, an out-of-bounds path, or a hit budget are each reasons for a human to look, not proof the action itself is malicious the way the firewall's dangerous tier is. Wired into the interceptor for every tool (not just Bash) between the firewall-deny short-circuit and package-check.
+- Morning report (`report/report.py`) reads the event log + snapshots table and renders Markdown: action counts by hook type, blocked (denied), flagged-for-review (asked), and snapshots created. "Total cost" is included as a line explicitly saying it's unavailable, for the same documented reason as killswitch/budget.py (hooks don't expose token/cost data) -- rather than a section that's just silently missing with no explanation, or a fabricated number. `since` filters by comparing `logged_at`/`created_at` as strings, which works because both are always written ISO 8601 UTC. Wired up as `undoable report [--since ISO8601]`.
 
 ## Blocked
 - (none)
