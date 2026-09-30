@@ -3,6 +3,7 @@ import sys
 from typing import Any, TextIO
 
 from undoable.firewall.rules import ALLOW, ASK, DENY, Decision, evaluate_tool_use
+from undoable.killswitch import check as killswitch_check
 from undoable.packages import check as packages_check
 from undoable.packages import registry as packages_registry
 from undoable.store.db import connect, default_db_path
@@ -10,20 +11,23 @@ from undoable.store.events import insert_event
 
 _INTERNAL_ERROR_TIER = "error"
 _PACKAGE_TIER = "package"
+_KILLSWITCH_TIER = "killswitch"
 
 
-def evaluate(payload: dict[str, Any]) -> Decision | None:
-    """Combined firewall + package-check decision for a hook payload, or
-    None where neither applies.
+def evaluate(payload: dict[str, Any], project_dir: str | None = None) -> Decision | None:
+    """Combined firewall + kill-switch + package-check decision for a hook
+    payload, or None where none applies.
 
     Only PreToolUse can still be prevented -- by the time PostToolUse or a
     session-level hook fires, the action already happened. A firewall deny
-    always wins outright (no reason to also spend time on a network-backed
-    package check). Package findings are local-first: typosquat detection
-    never touches the network, so it's reliable even offline; "package
-    doesn't exist" is network-backed and silently contributes nothing if
-    the check itself fails, rather than turning a network hiccup into an
-    approval-fatigue source for an otherwise ordinary `pip install`.
+    always wins outright (no reason to also spend time on the other two).
+    Kill switch (loop/budget/boundary) runs next, for every tool -- it's a
+    session-health concern, not specific to Bash. Package findings are
+    local-first: typosquat detection never touches the network, so it's
+    reliable even offline; "package doesn't exist" is network-backed and
+    silently contributes nothing if the check itself fails, rather than
+    turning a network hiccup into an approval-fatigue source for an
+    otherwise ordinary `pip install`.
     """
     if payload.get("hook_event_name") != "PreToolUse":
         return None
@@ -33,6 +37,18 @@ def evaluate(payload: dict[str, Any]) -> Decision | None:
     firewall_decision = evaluate_tool_use(tool_name, tool_input, cwd=payload.get("cwd"))
     if firewall_decision.decision == DENY:
         return firewall_decision
+
+    resolved_dir = project_dir or payload.get("cwd") or "."
+    kill_decision = killswitch_check.evaluate(
+        resolved_dir, payload.get("session_id", "unknown"), tool_name, tool_input
+    )
+    if kill_decision is not None:
+        return Decision(
+            tier=_KILLSWITCH_TIER,
+            decision=ASK,
+            reason=kill_decision.reason,
+            rule=f"killswitch-{kill_decision.check}",
+        )
 
     if tool_name == "Bash":
         command = (tool_input or {}).get("command") or ""
@@ -126,7 +142,7 @@ def run(stdin: TextIO = sys.stdin, project_dir: str | None = None) -> int:
     is_pre_tool_use = payload.get("hook_event_name") == "PreToolUse"
     decision: Decision | None = None
     try:
-        decision = evaluate(payload)
+        decision = evaluate(payload, project_dir=project_dir)
     except Exception as exc:
         print(f"undoable: internal error evaluating hook event: {exc}", file=sys.stderr)
         if is_pre_tool_use:

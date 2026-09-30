@@ -184,6 +184,43 @@ def test_run_does_not_ask_when_package_registry_is_unreachable(
     assert event.decision == "allow"
 
 
+def test_run_asks_when_the_same_bash_call_loops(tmp_path: Path, capsys) -> None:
+    payload = {**PRE_TOOL_USE, "tool_input": {"command": "pytest"}}
+    stdin = json.dumps(payload)
+
+    run(io.StringIO(stdin), project_dir=str(tmp_path))
+    capsys.readouterr()  # 1st: nothing to flag yet
+    run(io.StringIO(stdin), project_dir=str(tmp_path))
+    capsys.readouterr()  # 2nd: still nothing (default loop_threshold is 3)
+    exit_code = run(io.StringIO(stdin), project_dir=str(tmp_path))  # 3rd: identical repeat
+
+    assert exit_code == 0
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["permissionDecision"] == "ask"
+    assert "loop" in output["permissionDecisionReason"]
+
+    [*_, last] = _events(tmp_path)
+    assert last.decision == "ask"
+    assert last.risk_tier == "killswitch"
+
+
+def test_run_asks_when_a_file_tool_targets_outside_the_project(tmp_path: Path, capsys) -> None:
+    outside = str(tmp_path.parent / "outside.txt")
+    payload = {
+        "session_id": "sess-1",
+        "hook_event_name": "PreToolUse",
+        "cwd": str(tmp_path),
+        "tool_name": "Read",
+        "tool_input": {"file_path": outside},
+    }
+    exit_code = run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["permissionDecision"] == "ask"
+    assert outside in output["permissionDecisionReason"]
+
+
 def test_run_combines_firewall_and_package_reasons_in_one_chained_command(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
