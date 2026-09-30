@@ -49,6 +49,14 @@ RISKY_BASH = {
     "tool_input": {"command": "git push origin main"},
 }
 
+TYPOSQUAT_INSTALL = {
+    "session_id": "sess-1",
+    "hook_event_name": "PreToolUse",
+    "cwd": "/work/project",
+    "tool_name": "Bash",
+    "tool_input": {"command": "pip install reqeusts"},
+}
+
 
 def _events(tmp_path: Path):
     conn = connect(default_db_path(tmp_path))
@@ -136,6 +144,64 @@ def test_run_asks_about_risky_command_via_json_output(tmp_path: Path, capsys) ->
     assert event.decision == "ask"
     assert event.risk_tier == "risky"
     assert event.reason
+
+
+def test_run_asks_about_typosquat_package_install(tmp_path: Path, capsys, monkeypatch) -> None:
+    import undoable.packages.registry as packages_registry
+
+    monkeypatch.setattr(packages_registry, "default_fetch", lambda url, timeout: 200)
+
+    stdin = io.StringIO(json.dumps(TYPOSQUAT_INSTALL))
+    exit_code = run(stdin, project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["permissionDecision"] == "ask"
+    assert "requests" in output["permissionDecisionReason"]
+
+    [event] = _events(tmp_path)
+    assert event.decision == "ask"
+    assert event.risk_tier == "package"
+
+
+def test_run_does_not_ask_when_package_registry_is_unreachable(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import undoable.packages.registry as packages_registry
+
+    def raising_fetch(url, timeout):
+        raise TimeoutError
+
+    monkeypatch.setattr(packages_registry, "default_fetch", raising_fetch)
+
+    payload = {**PRE_TOOL_USE, "tool_input": {"command": "pip install requests"}}
+    exit_code = run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == ""  # unreachable registry != a reason to ask
+
+    [event] = _events(tmp_path)
+    assert event.decision == "allow"
+
+
+def test_run_combines_firewall_and_package_reasons_in_one_chained_command(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import undoable.packages.registry as packages_registry
+
+    monkeypatch.setattr(packages_registry, "default_fetch", lambda url, timeout: 200)
+
+    payload = {
+        **RISKY_BASH,
+        "tool_input": {"command": "git push origin main && pip install reqeusts"},
+    }
+    exit_code = run(io.StringIO(json.dumps(payload)), project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["permissionDecision"] == "ask"
+    assert "git push" in output["permissionDecisionReason"]
+    assert "requests" in output["permissionDecisionReason"]
 
 
 def test_run_prints_nothing_for_safe_command(tmp_path: Path, capsys) -> None:

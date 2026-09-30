@@ -2,24 +2,52 @@ import json
 import sys
 from typing import Any, TextIO
 
-from undoable.firewall.rules import ALLOW, ASK, Decision, evaluate_tool_use
+from undoable.firewall.rules import ALLOW, ASK, DENY, Decision, evaluate_tool_use
+from undoable.packages import check as packages_check
+from undoable.packages import registry as packages_registry
 from undoable.store.db import connect, default_db_path
 from undoable.store.events import insert_event
 
 _INTERNAL_ERROR_TIER = "error"
+_PACKAGE_TIER = "package"
 
 
 def evaluate(payload: dict[str, Any]) -> Decision | None:
-    """Firewall decision for a hook payload, or None where none applies.
+    """Combined firewall + package-check decision for a hook payload, or
+    None where neither applies.
 
     Only PreToolUse can still be prevented -- by the time PostToolUse or a
-    session-level hook fires, the action already happened.
+    session-level hook fires, the action already happened. A firewall deny
+    always wins outright (no reason to also spend time on a network-backed
+    package check). Package findings are local-first: typosquat detection
+    never touches the network, so it's reliable even offline; "package
+    doesn't exist" is network-backed and silently contributes nothing if
+    the check itself fails, rather than turning a network hiccup into an
+    approval-fatigue source for an otherwise ordinary `pip install`.
     """
     if payload.get("hook_event_name") != "PreToolUse":
         return None
-    return evaluate_tool_use(
-        payload.get("tool_name", ""), payload.get("tool_input"), cwd=payload.get("cwd")
-    )
+
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input")
+    firewall_decision = evaluate_tool_use(tool_name, tool_input, cwd=payload.get("cwd"))
+    if firewall_decision.decision == DENY:
+        return firewall_decision
+
+    if tool_name == "Bash":
+        command = (tool_input or {}).get("command") or ""
+        package_result = packages_check.evaluate_command(
+            command,
+            pypi_fetch=packages_registry.default_fetch,
+            npm_fetch=packages_registry.default_fetch,
+        )
+        if package_result is not None and package_result.decision == packages_check.ASK:
+            reason = package_result.reason
+            if firewall_decision.decision == ASK:
+                reason = f"{firewall_decision.reason} Also: {reason}"
+            return Decision(tier=_PACKAGE_TIER, decision=ASK, reason=reason, rule="package-check")
+
+    return firewall_decision
 
 
 def log_event(
