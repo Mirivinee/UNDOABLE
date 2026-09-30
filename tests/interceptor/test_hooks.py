@@ -103,81 +103,126 @@ def test_run_reads_stdin_and_logs(tmp_path: Path) -> None:
     assert event.hook_event == "Stop"
 
 
-def test_run_blocks_dangerous_command_and_logs_the_block(tmp_path: Path, capsys) -> None:
+def _permission_decision(stdout: str) -> dict:
+    return json.loads(stdout)["hookSpecificOutput"]
+
+
+def test_run_denies_dangerous_command_via_json_output(tmp_path: Path, capsys) -> None:
     stdin = io.StringIO(json.dumps(DANGEROUS_BASH))
     exit_code = run(stdin, project_dir=str(tmp_path))
 
-    assert exit_code == 2
-    assert capsys.readouterr().err.strip()
+    assert exit_code == 0  # exit 2 would force a hard block regardless of the JSON
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["hookEventName"] == "PreToolUse"
+    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecisionReason"]
+
     [event] = _events(tmp_path)
-    assert event.decision == "block"
+    assert event.decision == "deny"
     assert event.risk_tier == "dangerous"
     assert event.reason
 
 
-def test_run_allows_risky_command_but_flags_it(tmp_path: Path) -> None:
+def test_run_asks_about_risky_command_via_json_output(tmp_path: Path, capsys) -> None:
     stdin = io.StringIO(json.dumps(RISKY_BASH))
     exit_code = run(stdin, project_dir=str(tmp_path))
 
     assert exit_code == 0
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["permissionDecision"] == "ask"
+    assert output["permissionDecisionReason"]
+
     [event] = _events(tmp_path)
-    assert event.decision == "allow"
+    assert event.decision == "ask"
     assert event.risk_tier == "risky"
     assert event.reason
 
 
-def test_run_allows_safe_command(tmp_path: Path) -> None:
+def test_run_prints_nothing_for_safe_command(tmp_path: Path, capsys) -> None:
     stdin = io.StringIO(json.dumps(PRE_TOOL_USE))
     exit_code = run(stdin, project_dir=str(tmp_path))
 
     assert exit_code == 0
+    # No JSON at all for "allow" -- Claude Code's own normal permission flow
+    # applies rather than us force-approving every safe command.
+    assert capsys.readouterr().out.strip() == ""
+
     [event] = _events(tmp_path)
     assert event.decision == "allow"
     assert event.risk_tier == "safe"
 
 
-def test_run_does_not_evaluate_firewall_for_posttooluse(tmp_path: Path) -> None:
+def test_run_does_not_evaluate_firewall_for_posttooluse(tmp_path: Path, capsys) -> None:
     stdin = io.StringIO(json.dumps(POST_TOOL_USE))
     exit_code = run(stdin, project_dir=str(tmp_path))
 
     assert exit_code == 0
+    assert capsys.readouterr().out.strip() == ""
     [event] = _events(tmp_path)
     assert event.decision is None
     assert event.risk_tier is None
 
 
-def test_run_never_raises_on_malformed_json(tmp_path: Path, capsys) -> None:
+def test_run_asks_on_malformed_json_rather_than_silently_allowing(tmp_path: Path, capsys) -> None:
     stdin = io.StringIO("{not valid json")
     exit_code = run(stdin, project_dir=str(tmp_path))  # must not raise
 
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "undoable" in captured.err
+    output = _permission_decision(captured.out)
+    assert output["permissionDecision"] == "ask"
     assert not (tmp_path / ".undoable" / "undoable.db").exists()
 
 
-def test_run_blocks_pretooluse_on_internal_error(monkeypatch, tmp_path: Path) -> None:
+def test_run_asks_on_internal_error_during_pretooluse(monkeypatch, tmp_path: Path, capsys) -> None:
     import undoable.interceptor.hooks as hooks_module
 
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(hooks_module, "log_event", boom)
+    monkeypatch.setattr(hooks_module, "evaluate", boom)
     exit_code = hooks_module.run(io.StringIO(json.dumps(PRE_TOOL_USE)), project_dir=str(tmp_path))
 
-    assert exit_code == 2
+    assert exit_code == 0
+    output = _permission_decision(capsys.readouterr().out)
+    assert output["permissionDecision"] == "ask"
+    assert "boom" in output["permissionDecisionReason"]
 
 
-def test_run_allows_non_pretooluse_hook_on_internal_error(monkeypatch, tmp_path: Path) -> None:
+def test_run_allows_non_pretooluse_hook_on_internal_error(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
     import undoable.interceptor.hooks as hooks_module
 
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(hooks_module, "log_event", boom)
+    monkeypatch.setattr(hooks_module, "evaluate", boom)
     exit_code = hooks_module.run(io.StringIO(json.dumps(SESSION_START)), project_dir=str(tmp_path))
 
     assert exit_code == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_run_does_not_downgrade_a_dangerous_decision_when_logging_fails(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Regression test: a log_event failure must never downgrade an
+    already-computed deny/ask decision back to something weaker."""
+    import undoable.interceptor.hooks as hooks_module
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(hooks_module, "log_event", boom)
+    exit_code = hooks_module.run(io.StringIO(json.dumps(DANGEROUS_BASH)), project_dir=str(tmp_path))
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "disk full" in captured.err
+    output = _permission_decision(captured.out)
+    assert output["permissionDecision"] == "deny"
 
 
 def test_run_never_raises_on_empty_stdin(tmp_path: Path) -> None:
@@ -213,7 +258,7 @@ def test_hook_command_via_subprocess_always_exits_zero(tmp_path: Path) -> None:
     assert event.session_id == "sess-3"
 
 
-def test_hook_command_via_subprocess_blocks_dangerous_command(tmp_path: Path) -> None:
+def test_hook_command_via_subprocess_denies_dangerous_command(tmp_path: Path) -> None:
     import subprocess
 
     result = subprocess.run(
@@ -225,5 +270,6 @@ def test_hook_command_via_subprocess_blocks_dangerous_command(tmp_path: Path) ->
         timeout=10,
     )
 
-    assert result.returncode == 2
-    assert result.stderr.strip()
+    assert result.returncode == 0
+    output = _permission_decision(result.stdout)
+    assert output["permissionDecision"] == "deny"

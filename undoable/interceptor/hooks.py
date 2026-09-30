@@ -2,9 +2,11 @@ import json
 import sys
 from typing import Any, TextIO
 
-from undoable.firewall.rules import BLOCK, Decision, evaluate_tool_use
+from undoable.firewall.rules import ALLOW, ASK, Decision, evaluate_tool_use
 from undoable.store.db import connect, default_db_path
 from undoable.store.events import insert_event
+
+_INTERNAL_ERROR_TIER = "error"
 
 
 def evaluate(payload: dict[str, Any]) -> Decision | None:
@@ -15,7 +17,9 @@ def evaluate(payload: dict[str, Any]) -> Decision | None:
     """
     if payload.get("hook_event_name") != "PreToolUse":
         return None
-    return evaluate_tool_use(payload.get("tool_name", ""), payload.get("tool_input"))
+    return evaluate_tool_use(
+        payload.get("tool_name", ""), payload.get("tool_input"), cwd=payload.get("cwd")
+    )
 
 
 def log_event(
@@ -46,34 +50,70 @@ def log_event(
         conn.close()
 
 
+def _permission_output(decision: Decision) -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision.decision,
+            "permissionDecisionReason": decision.reason,
+        }
+    }
+
+
 def run(stdin: TextIO = sys.stdin, project_dir: str | None = None) -> int:
     """Entry point for the `undoable hook` command.
 
-    Returns the process exit code Claude Code should see: 0 to allow the
-    tool call, 2 to block it (stderr becomes the reason Claude is shown).
-    Never raises, but never silently allows a tool call either: if stdin
-    can't even be parsed, there's no identified tool call yet, so we just
-    report it and allow. If parsing succeeded and the hook is PreToolUse but
-    something in our own evaluation breaks, that's an internal error on a
-    real decision, so we fail safe by blocking rather than allowing it
-    through unnoticed (there is no distinct "ask" exit code available here).
+    Always exits 0: exit code 2 would force a hard block regardless of any
+    JSON printed, which would make "ask" impossible. A real PreToolUse
+    decision is instead communicated via the documented
+    hookSpecificOutput.permissionDecision JSON on stdout (allow/ask/deny).
+    For "allow" nothing is printed at all, matching Claude Code's own
+    convention, so the normal permission flow still applies rather than us
+    force-approving every safe command.
+
+    Never raises, and never silently allows an unidentifiable action either.
+    If stdin can't even be parsed, this could still have been a mangled
+    PreToolUse call, so it fails safe as "ask" rather than assuming it
+    wasn't (Claude Code ignores this JSON for hook types it doesn't apply
+    to, so there's no cost to raising it when we're unsure). If parsing
+    succeeds but evaluating a PreToolUse payload breaks, that's the same
+    "ask" fallback. Logging is a separate concern from deciding: a failure
+    writing to the event log is reported but never downgrades an
+    already-computed deny/ask decision back to something weaker.
     """
     try:
         raw_text = stdin.read()
         payload = json.loads(raw_text) if raw_text.strip() else {}
     except Exception as exc:
         print(f"undoable: failed to parse hook input: {exc}", file=sys.stderr)
+        unparseable = Decision(
+            tier=_INTERNAL_ERROR_TIER,
+            decision=ASK,
+            reason=f"undoable: could not parse hook input ({exc}); review manually.",
+            rule="internal-error",
+        )
+        print(json.dumps(_permission_output(unparseable)))
         return 0
 
     is_pre_tool_use = payload.get("hook_event_name") == "PreToolUse"
+    decision: Decision | None = None
     try:
         decision = evaluate(payload)
-        log_event(payload, project_dir=project_dir, decision=decision)
     except Exception as exc:
         print(f"undoable: internal error evaluating hook event: {exc}", file=sys.stderr)
-        return 2 if is_pre_tool_use else 0
+        if is_pre_tool_use:
+            decision = Decision(
+                tier=_INTERNAL_ERROR_TIER,
+                decision=ASK,
+                reason=f"undoable: internal error evaluating this action ({exc}); review manually.",
+                rule="internal-error",
+            )
 
-    if decision is not None and decision.decision == BLOCK:
-        print(decision.reason, file=sys.stderr)
-        return 2
+    try:
+        log_event(payload, project_dir=project_dir, decision=decision)
+    except Exception as exc:
+        print(f"undoable: failed to log hook event: {exc}", file=sys.stderr)
+
+    if decision is not None and decision.decision != ALLOW:
+        print(json.dumps(_permission_output(decision)))
     return 0
