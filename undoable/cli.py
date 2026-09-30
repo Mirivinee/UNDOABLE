@@ -1,9 +1,11 @@
 import sys
+import tempfile
 from pathlib import Path
 
 import typer
 
 from undoable import __version__
+from undoable.attacks.scenarios import run_all, summarize
 from undoable.interceptor.hooks import run as run_hook
 from undoable.report.report import generate_report
 
@@ -36,6 +38,24 @@ def report(
     flagged for review, and snapshots created, for the current directory's
     project."""
     typer.echo(generate_report(str(Path.cwd()), since=since))
+
+
+@app.command(name="attack-suite")
+def attack_suite() -> None:
+    """Run the built-in attack/mistake scenario suite (docs/PROJECT.md
+    section 8) against the real interceptor in a disposable temp project,
+    and print a metrics summary followed by that project's morning report.
+
+    This doubles as the demo script from docs/PROJECT.md section 9: every
+    step it walks through -- catching a hidden instruction, flagging a
+    typo package, taking a destructive mistake back with rollback, ending
+    on the morning report -- runs for real here, nothing is staged.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp)
+        results = run_all(project_dir)
+        typer.echo(summarize(results))
+        typer.echo(generate_report(str(project_dir)))
 
 
 if __name__ == "__main__":
